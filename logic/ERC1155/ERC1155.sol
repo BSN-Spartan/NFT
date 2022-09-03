@@ -1,0 +1,488 @@
+// SPDX-License-Identifier: Spartan
+pragma solidity ^0.8.0;
+
+import "../../interface/ERC1155/IERC1155.sol";
+import "../../interface/ERC1155/IERC1155Receiver.sol";
+import "../../utils/AddressUpgradeable.sol";
+import "../../utils/OwnableUpgradeable.sol";
+import "../../proxy/utils/UUPSUpgradeable.sol";
+
+/**
+ * @dev Implementation of the basic standard multi-token.
+ * See https://eips.ethereum.org/EIPS/eip-1155
+ */
+contract ERC1155 is
+    OwnableUpgradeable,
+    UUPSUpgradeable,
+    IERC1155
+{
+    using AddressUpgradeable for address;
+
+    // Contract token name
+    string private _name;
+
+    // Contract token symbol
+    string private _symbol;
+
+    // The last generated token ID
+    uint256 private _lastTokenId;
+
+    // Mapping from token ID to token name
+    mapping(uint256 => string) private _tokenNames;
+
+    // Mapping from token ID to token symbol
+    mapping(uint256 => string) private _tokenSymbols;
+
+    // Mapping from token ID to token uri
+    mapping(uint256 => string) private _tokenURIs;
+
+    // Mapping owner address to token count
+    mapping(uint256 => mapping(address => uint256)) private _balances;
+
+    // Mapping from token ID to token state
+    mapping(address => mapping(address => bool)) private _operatorApprovals;
+
+    // Mapping from token ID list
+    mapping(uint256 => bool) _tokenIds;
+
+    constructor() initializer {}
+
+    function initialize() public initializer {
+        __Ownable_init();
+        __UUPSUpgradeable_init();
+    }
+
+    /**
+     * @dev Function that should revert when `msg.sender` is not authorized to upgrade the contract. Called by
+     * {upgradeTo} and {upgradeToAndCall}.
+     *
+     * Normally, this function will use an xref:access.adoc[access control] modifier such as {Ownable-onlyOwner}.
+     */
+    function _authorizeUpgrade(address newImplementation)
+        internal
+        override
+        onlyOwner
+    {}
+
+    /**
+     * @dev  Initializes a name and symbol for the token.
+     *
+     * Requirements:
+     * - sender must be the owner only.
+     */
+    function setNameAndSymbol(string memory name_, string memory symbol_)
+        public
+        onlyOwner
+    {
+        _name = name_;
+        _symbol = symbol_;
+    }
+
+    /**
+     * @dev See {IERC1155-safeMint}.
+     */
+    function safeMint(
+        address to,
+        string memory name,
+        string memory symbol,
+        uint256 amount,
+        string memory tokenURI,
+        bytes memory data
+    ) public override {
+        uint256 tokenId = _lastTokenId + 1;
+        _mint(to, name, symbol, tokenId, amount, tokenURI);
+        emit TransferSingle(_msgSender(), address(0), to, tokenId, amount);
+        _doSafeTransferAcceptanceCheck(
+            _msgSender(),
+            address(0),
+            to,
+            tokenId,
+            amount,
+            data
+        );
+    }
+
+    /**
+     * @dev See {IERC1155-safeMintBatch}.
+     */
+    function safeMintBatch(
+        address to,
+        string[] memory name,
+        string[] memory symbol,
+        uint256[] memory amounts,
+        string[] memory tokenURIs,
+        bytes memory data
+    ) public {
+        require(amounts.length == tokenURIs.length, "ERC1155:length mismatch");
+        uint256 tokenId = _lastTokenId;
+        uint256[] memory tokenIds = new uint256[](amounts.length);
+        for (uint256 i = 0; i < amounts.length; i++) {
+            tokenId += 1;
+            tokenIds[i] = tokenId;
+            _mint(
+                to,
+                name[i],
+                symbol[i],
+                tokenIds[i],
+                amounts[i],
+                tokenURIs[i]
+            );
+        }
+        emit TransferBatch(_msgSender(), address(0), to, tokenIds, amounts);
+        _doSafeBatchTransferAcceptanceCheck(
+            _msgSender(),
+            address(0),
+            to,
+            tokenIds,
+            amounts,
+            data
+        );
+    }
+
+    /**
+     * @dev See {IERC1155-setApprovalForAll}.
+     */
+    function setApprovalForAll(address operator, bool approved)
+        public
+        override
+    {
+        require(_msgSender() != operator, "ERC1155:setting approval for self");
+        _operatorApprovals[_msgSender()][operator] = approved;
+        emit ApprovalForAll(_msgSender(), operator, approved);
+    }
+
+    /**
+     * @dev See {IERC1155-isApprovedForAll}.
+     */
+    function isApprovedForAll(address owner, address operator)
+        public
+        view
+        override
+        returns (bool)
+    {
+        require(
+            owner != address(0) && operator != address(0),
+            "ERC1155:zero address"
+        );
+        return _operatorApprovals[owner][operator];
+    }
+
+    /**
+     * @dev See {IERC1155-safeTransferFrom}.
+     */
+    function safeTransferFrom(
+        address from,
+        address to,
+        uint256 tokenId,
+        uint256 amount,
+        bytes memory data
+    ) public override {
+        _transfer(from, to, tokenId, amount);
+        emit TransferSingle(_msgSender(), from, to, tokenId, amount);
+        _doSafeTransferAcceptanceCheck(
+            _msgSender(),
+            from,
+            to,
+            tokenId,
+            amount,
+            data
+        );
+    }
+
+    /**
+     * @dev See {IERC1155-safeBatchTransferFrom}.
+     */
+    function safeBatchTransferFrom(
+        address from,
+        address to,
+        uint256[] memory tokenIds,
+        uint256[] memory amounts,
+        bytes memory data
+    ) public override {
+        require(tokenIds.length == amounts.length, "ERC1155:length mismatch");
+        for (uint256 i = 0; i < tokenIds.length; ++i) {
+            _transfer(from, to, tokenIds[i], amounts[i]);
+        }
+        emit TransferBatch(_msgSender(), from, to, tokenIds, amounts);
+        _doSafeBatchTransferAcceptanceCheck(
+            _msgSender(),
+            from,
+            to,
+            tokenIds,
+            amounts,
+            data
+        );
+    }
+
+    /**
+     * @dev See {IERC1155-burn}.
+     */
+    function burn(address owner, uint256 tokenId) public {
+        _burn(owner, tokenId);
+        emit TransferSingle(_msgSender(), owner, address(0), tokenId, 0);
+    }
+
+    /**
+     * @dev See {IERC1155-burnBatch}.
+     */
+    function burnBatch(address owner, uint256[] memory tokenIds) public {
+        uint256[] memory amounts = new uint256[](tokenIds.length);
+        for (uint256 i = 0; i < tokenIds.length; i++) {
+            _burn(owner, tokenIds[i]);
+        }
+        emit TransferBatch(_msgSender(), owner, address(0), tokenIds, amounts);
+    }
+
+    /**
+     * @dev See {IERC1155-balanceOf}.
+     */
+    function balanceOf(address owner, uint256 tokenId)
+        public
+        view
+        override
+        returns (uint256)
+    {
+        require(owner != address(0), "ERC1155:zero address");
+        return _balances[tokenId][owner];
+    }
+
+    /**
+     * @dev See {IERC1155-balanceOfBatch}.
+     */
+    function balanceOfBatch(address[] memory owners, uint256[] memory tokenIds)
+        public
+        view
+        override
+        returns (uint256[] memory)
+    {
+        require(owners.length == tokenIds.length, "ERC1155:length mismatch");
+        uint256[] memory batchBalances = new uint256[](owners.length);
+        for (uint256 i = 0; i < tokenIds.length; i++) {
+            batchBalances[i] = ERC1155.balanceOf(owners[i], tokenIds[i]);
+        }
+        return batchBalances;
+    }
+
+    /**
+     * @dev See {IERC1155-tokenName}.
+     */
+    function tokenName(uint256 tokenId)
+        public
+        view
+        override
+        returns (string memory)
+    {
+        return _tokenNames[tokenId];
+    }
+
+    /**
+     * @dev See {IERC1155-tokenSymbol}.
+     */
+    function tokenSymbol(uint256 tokenId)
+        public
+        view
+        override
+        returns (string memory)
+    {
+        return _tokenSymbols[tokenId];
+    }
+
+    /**
+     * @dev See {IERC1155-tokenURI}.
+     */
+    function tokenURI(uint256 tokenId)
+        public
+        view
+        override
+        returns (string memory)
+    {
+        return _tokenURIs[tokenId];
+    }
+
+    /**
+     * @dev See {IERC1155-getLatestTokenId}.
+     */
+    function getLatestTokenId() public view override returns (uint256) {
+        return _lastTokenId;
+    }
+
+    /**
+     * @dev Creates `amount` tokens of token type `tokenId`, and assigns them to `to`.
+     *
+     * Requirements:
+     *
+     * - `to` cannot be the zero address.
+     * - If `to` refers to a smart contract, it must implement {IERC1155Receiver-onERC1155Received} and return the
+     * acceptance magic value.
+     */
+    function _mint(
+        address to,
+        string memory name,
+        string memory symbol,
+        uint256 tokenId,
+        uint256 amount,
+        string memory tokenURI
+    ) private {
+        require(to != address(0), "ERC1155:zero address");
+        _requireMintConditions(tokenId, amount);
+        _balances[tokenId][to] += amount;
+        _tokenURIs[tokenId] = tokenURI;
+        _tokenIds[tokenId] = true;
+        _tokenNames[tokenId] = name;
+        _tokenSymbols[tokenId] = symbol;
+        _lastTokenId = tokenId;
+    }
+
+    /**
+     * @dev Transfers `amount` tokens of token type `tokenId` from `from` to `to`.
+     *
+     *
+     * Requirements:
+     *
+     * - `to` cannot be the zero address.
+     * - `from` must have a balance of tokens of type `tokenId` of at least `amount`.
+     */
+    function _transfer(
+        address from,
+        address to,
+        uint256 tokenId,
+        uint256 amount
+    ) private {
+        _requireExists(tokenId);
+        _requireAdequateBalance(from, tokenId, amount);
+        uint256 fromBalance = _balances[tokenId][from];
+        unchecked {
+            _balances[tokenId][from] = fromBalance - amount;
+        }
+        _balances[tokenId][to] += amount;
+    }
+
+    /**
+     * @dev Destroys `amount` tokens of token type `tokenId` from `from`
+     *
+     *
+     * Requirements:
+     *
+     * - `from` cannot be the zero address.
+     * - `from` must have at least `amount` tokens of token type `tokenId`.
+     */
+    function _burn(address owner, uint256 tokenId) private {
+        require(owner != address(0), "ERC1155:zero address");
+        _requireExists(tokenId);
+        _requireAdequateBalance(owner, tokenId);
+        // _requireAdequateBalance(owner, tokenId);
+        _balances[tokenId][owner] = 0;
+    }
+
+    /**
+     * @dev  check acceptance for SafeTransfer
+     */
+    function _doSafeTransferAcceptanceCheck(
+        address operator,
+        address from,
+        address to,
+        uint256 tokenId,
+        uint256 amount,
+        bytes memory data
+    ) private {
+        if (to.isContract()) {
+            try
+                IERC1155Receiver(to).onERC1155Received(
+                    operator,
+                    from,
+                    tokenId,
+                    amount,
+                    data
+                )
+            returns (bytes4 response) {
+                if (response != IERC1155Receiver.onERC1155Received.selector) {
+                    revert("ERC1155:ERC1155Receiver rejected");
+                }
+            } catch Error(string memory reason) {
+                revert(reason);
+            } catch {
+                revert("ERC1155:transfer to non ERC1155Receiver implementer");
+            }
+        }
+    }
+
+    /**
+     * @dev  check acceptance for SafeBatchTransfer
+     */
+    function _doSafeBatchTransferAcceptanceCheck(
+        address operator,
+        address from,
+        address to,
+        uint256[] memory tokenIds,
+        uint256[] memory amounts,
+        bytes memory data
+    ) private {
+        if (to.isContract()) {
+            try
+                IERC1155Receiver(to).onERC1155BatchReceived(
+                    operator,
+                    from,
+                    tokenIds,
+                    amounts,
+                    data
+                )
+            returns (bytes4 response) {
+                if (
+                    response != IERC1155Receiver.onERC1155BatchReceived.selector
+                ) {
+                    revert("ERC1155:ERC1155Receiver rejected");
+                }
+            } catch Error(string memory reason) {
+                revert(reason);
+            } catch {
+                revert("ERC1155:transfer to non ERC1155Receiver implementer");
+            }
+        }
+    }
+
+    /**
+     * @dev Requires `tokenId` exists.
+     */
+    function _requireExists(uint256 tokenId) private view {
+        require(_tokenIds[tokenId], "ERC1155:nonexistent token");
+    }
+
+    /**
+     * @dev Requires `tokenId` does not exist, amount greater than zero.
+     */
+    function _requireMintConditions(uint256 tokenId, uint256 amount)
+        private
+        view
+    {
+        require(amount > 0, "ERC1155:invalid amount");
+        require(!_tokenIds[tokenId], "ERC1155:already minted");
+    }
+
+    /**
+     * @dev Requires adequate balance.
+     */
+    function _requireAdequateBalance(address owner, uint256 tokenId)
+        private
+        view
+    {
+        require(
+            ERC1155.balanceOf(owner, tokenId) > 0,
+            "ERC1155:insufficient balance"
+        );
+    }
+
+    /**
+     * @dev Requires adequate balance.
+     */
+    function _requireAdequateBalance(
+        address owner,
+        uint256 tokenId,
+        uint256 amount
+    ) private view {
+        require(amount > 0, "ERC1155:invalid amount");
+        require(
+            ERC1155.balanceOf(owner, tokenId) >= amount,
+            "ERC1155:insufficient balance"
+        );
+    }
+}

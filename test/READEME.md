@@ -20,7 +20,7 @@ Run the following command on the command line to load the dependencies required 
 $ go mod tidy
 ```
 
-There are three test files in the `test` directory where the NFT project is located:
+The three test files are put in the corresponding directory under `NFT/test/test/` where the NFT project is located:
 
 - deploy_test.go: The file used to deploy ERC721 and ERC1155 contracts.
 - ERC721_test.go: The file used to test the methods in ERC721 contracts.

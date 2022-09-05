@@ -10,11 +10,7 @@ import "../../proxy/utils/UUPSUpgradeable.sol";
 /**
  * @dev Implementation of https://eips.ethereum.org/EIPS/eip-721[ERC721] Non-Fungible Token Standard.
  */
-contract ERC721 is
-    OwnableUpgradeable,
-    UUPSUpgradeable,
-    IERC721
-{
+contract ERC721 is OwnableUpgradeable, UUPSUpgradeable, IERC721 {
     using AddressUpgradeable for address;
 
     // Contract token name
@@ -122,6 +118,10 @@ contract ERC721 is
         uint256 tokenId,
         bytes memory data
     ) public override {
+        _requireAvailableTokenAccount(from);
+        _requireAvailableTokenAccount(to);
+        _requireExists(tokenId);
+        _requireApprovedOrOwner(_msgSender(), tokenId);
         _transfer(from, to, tokenId);
         emit Transfer(from, to, tokenId);
         require(
@@ -138,6 +138,10 @@ contract ERC721 is
         address to,
         uint256 tokenId
     ) public override {
+        _requireAvailableTokenAccount(from);
+        _requireAvailableTokenAccount(to);
+        _requireExists(tokenId);
+        _requireApprovedOrOwner(_msgSender(), tokenId);
         _transfer(from, to, tokenId);
         emit Transfer(from, to, tokenId);
     }
@@ -147,6 +151,7 @@ contract ERC721 is
      */
     function approve(address to, uint256 tokenId) public override {
         address owner = ERC721.ownerOf(tokenId);
+        _requireAvailableTokenAccount(to);
         require(to != owner, "ERC721:approval to current owner");
         require(
             _msgSender() == owner ||
@@ -177,6 +182,7 @@ contract ERC721 is
         public
         override
     {
+        _requireAvailableTokenAccount(operator);
         require(operator != _msgSender(), "ERC721:approve to caller");
         _operatorApprovals[_msgSender()][operator] = approved;
         emit ApprovalForAll(_msgSender(), operator, approved);
@@ -202,8 +208,11 @@ contract ERC721 is
      * @dev See {IERC721-burn}.
      */
     function burn(uint256 tokenId) public override {
+        _requireExists(tokenId);
+        _requireApprovedOrOwner(_msgSender(), tokenId);
         address owner = ERC721.ownerOf(tokenId);
-        _clearApprovals(tokenId);
+        delete _tokenApprovals[tokenId];
+        delete _tokenURIs[tokenId];
         _balances[owner] -= 1;
         delete _owners[tokenId];
         emit Transfer(owner, address(0), tokenId);
@@ -241,6 +250,7 @@ contract ERC721 is
         override
         returns (string memory)
     {
+        _requireExists(tokenId);
         return _tokenNames[tokenId];
     }
 
@@ -253,6 +263,7 @@ contract ERC721 is
         override
         returns (string memory)
     {
+        _requireExists(tokenId);
         return _tokenSymbols[tokenId];
     }
 
@@ -265,6 +276,7 @@ contract ERC721 is
         override
         returns (string memory)
     {
+        _requireExists(tokenId);
         return _tokenURIs[tokenId];
     }
 
@@ -292,13 +304,19 @@ contract ERC721 is
         string memory symbol,
         string memory tokenURI
     ) private {
-        require(to != address(0), "ERC721:zero address");
+        _requireAvailableTokenAccount(to);
         require(_owners[tokenId] == address(0), "ERC721:already minted");
         _balances[to] += 1;
         _owners[tokenId] = to;
-        _tokenNames[tokenId] = name;
-        _tokenSymbols[tokenId] = symbol;
-        _tokenURIs[tokenId] = tokenURI;
+        if (bytes(name).length != 0) {
+            _tokenNames[tokenId] = name;
+        }
+        if (bytes(symbol).length != 0) {
+            _tokenSymbols[tokenId] = symbol;
+        }
+        if (bytes(tokenURI).length != 0) {
+            _tokenURIs[tokenId] = tokenURI;
+        }
         _lastTokenId = tokenId;
     }
 
@@ -321,18 +339,10 @@ contract ERC721 is
             ERC721.ownerOf(tokenId) == from,
             "ERC721:transfer of token that is not own"
         );
-        // Clear approvals from the previous owner
-        _clearApprovals(tokenId);
+        delete _tokenApprovals[tokenId];
         _balances[from] -= 1;
         _balances[to] += 1;
         _owners[tokenId] = to;
-    }
-
-    /**
-     * @dev Clear approvals from the previous owner
-     */
-    function _clearApprovals(uint256 tokenId) private {
-        _tokenApprovals[tokenId] = address(0);
     }
 
     /**
@@ -383,5 +393,35 @@ contract ERC721 is
      */
     function _requireExists(uint256 tokenId) private view {
         require(_owners[tokenId] != address(0), "ERC721:nonexistent token");
+    }
+
+    /**
+     * @dev Requires a available account.
+     *
+     * Requirements:
+     * - `sender` must be a available `token` account.
+     */
+    function _requireAvailableTokenAccount(address account) private view {
+        require(account != address(0), "ERC721:zero address");
+    }
+
+    /**
+     * @dev Requires `spender` is allowed to manage `tokenId`.
+     *
+     * Requirements:
+     * - `tokenId` must exists.
+     * - `spender` is owner or approved.
+     */
+    function _requireApprovedOrOwner(address spender, uint256 tokenId)
+        private
+        view
+    {
+        address owner = ERC721.ownerOf(tokenId);
+        require(
+            spender == owner ||
+                ERC721.getApproved(tokenId) == spender ||
+                ERC721.isApprovedForAll(owner, spender),
+            "ERC721:not owner nor approved"
+        );
     }
 }

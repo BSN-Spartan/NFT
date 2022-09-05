@@ -11,11 +11,7 @@ import "../../proxy/utils/UUPSUpgradeable.sol";
  * @dev Implementation of the basic standard multi-token.
  * See https://eips.ethereum.org/EIPS/eip-1155
  */
-contract ERC1155 is
-    OwnableUpgradeable,
-    UUPSUpgradeable,
-    IERC1155
-{
+contract ERC1155 is OwnableUpgradeable, UUPSUpgradeable, IERC1155 {
     using AddressUpgradeable for address;
 
     // Contract token name
@@ -44,6 +40,9 @@ contract ERC1155 is
 
     // Mapping from token ID list
     mapping(uint256 => bool) _tokenIds;
+
+    // Mapping from token ID to token amounts
+    mapping(uint256 => uint256) _nftAmts;
 
     constructor() initializer {}
 
@@ -89,6 +88,7 @@ contract ERC1155 is
         string memory tokenURI,
         bytes memory data
     ) public override {
+        _requireAvailableTokenAccount(to);
         uint256 tokenId = _lastTokenId + 1;
         _mint(to, name, symbol, tokenId, amount, tokenURI);
         emit TransferSingle(_msgSender(), address(0), to, tokenId, amount);
@@ -107,12 +107,13 @@ contract ERC1155 is
      */
     function safeMintBatch(
         address to,
-        string[] memory name,
-        string[] memory symbol,
+        string[] memory names,
+        string[] memory symbols,
         uint256[] memory amounts,
         string[] memory tokenURIs,
         bytes memory data
-    ) public {
+    ) public override {
+        _requireAvailableTokenAccount(to);
         require(amounts.length == tokenURIs.length, "ERC1155:length mismatch");
         uint256 tokenId = _lastTokenId;
         uint256[] memory tokenIds = new uint256[](amounts.length);
@@ -121,8 +122,8 @@ contract ERC1155 is
             tokenIds[i] = tokenId;
             _mint(
                 to,
-                name[i],
-                symbol[i],
+                names[i],
+                symbols[i],
                 tokenIds[i],
                 amounts[i],
                 tokenURIs[i]
@@ -146,6 +147,7 @@ contract ERC1155 is
         public
         override
     {
+        _requireAvailableTokenAccount(operator);
         require(_msgSender() != operator, "ERC1155:setting approval for self");
         _operatorApprovals[_msgSender()][operator] = approved;
         emit ApprovalForAll(_msgSender(), operator, approved);
@@ -177,6 +179,9 @@ contract ERC1155 is
         uint256 amount,
         bytes memory data
     ) public override {
+        _requireAvailableTokenAccount(from);
+        _requireAvailableTokenAccount(to);
+        _requireApprovedOrOwner(from, _msgSender());
         _transfer(from, to, tokenId, amount);
         emit TransferSingle(_msgSender(), from, to, tokenId, amount);
         _doSafeTransferAcceptanceCheck(
@@ -199,6 +204,9 @@ contract ERC1155 is
         uint256[] memory amounts,
         bytes memory data
     ) public override {
+        _requireAvailableTokenAccount(from);
+        _requireAvailableTokenAccount(to);
+        _requireApprovedOrOwner(from, _msgSender());
         require(tokenIds.length == amounts.length, "ERC1155:length mismatch");
         for (uint256 i = 0; i < tokenIds.length; ++i) {
             _transfer(from, to, tokenIds[i], amounts[i]);
@@ -217,7 +225,8 @@ contract ERC1155 is
     /**
      * @dev See {IERC1155-burn}.
      */
-    function burn(address owner, uint256 tokenId) public {
+    function burn(address owner, uint256 tokenId) public override {
+        _requireApprovedOrOwner(owner, _msgSender());
         _burn(owner, tokenId);
         emit TransferSingle(_msgSender(), owner, address(0), tokenId, 0);
     }
@@ -225,7 +234,12 @@ contract ERC1155 is
     /**
      * @dev See {IERC1155-burnBatch}.
      */
-    function burnBatch(address owner, uint256[] memory tokenIds) public {
+    function burnBatch(address owner, uint256[] memory tokenIds)
+        public
+        override
+    {
+        _requireApprovedOrOwner(owner, _msgSender());
+        require(tokenIds.length != 0, "ERC1155: length cannot be zero");
         uint256[] memory amounts = new uint256[](tokenIds.length);
         for (uint256 i = 0; i < tokenIds.length; i++) {
             _burn(owner, tokenIds[i]);
@@ -272,6 +286,7 @@ contract ERC1155 is
         override
         returns (string memory)
     {
+        _requireExists(tokenId);
         return _tokenNames[tokenId];
     }
 
@@ -284,6 +299,7 @@ contract ERC1155 is
         override
         returns (string memory)
     {
+        _requireExists(tokenId);
         return _tokenSymbols[tokenId];
     }
 
@@ -296,6 +312,7 @@ contract ERC1155 is
         override
         returns (string memory)
     {
+        _requireExists(tokenId);
         return _tokenURIs[tokenId];
     }
 
@@ -323,13 +340,19 @@ contract ERC1155 is
         uint256 amount,
         string memory tokenURI
     ) private {
-        require(to != address(0), "ERC1155:zero address");
         _requireMintConditions(tokenId, amount);
         _balances[tokenId][to] += amount;
-        _tokenURIs[tokenId] = tokenURI;
+        if (bytes(name).length != 0) {
+            _tokenNames[tokenId] = name;
+        }
+        if (bytes(symbol).length != 0) {
+            _tokenSymbols[tokenId] = symbol;
+        }
+        if (bytes(tokenURI).length != 0) {
+            _tokenURIs[tokenId] = tokenURI;
+        }
+        _nftAmts[tokenId] = amount;
         _tokenIds[tokenId] = true;
-        _tokenNames[tokenId] = name;
-        _tokenSymbols[tokenId] = symbol;
         _lastTokenId = tokenId;
     }
 
@@ -367,11 +390,16 @@ contract ERC1155 is
      * - `from` must have at least `amount` tokens of token type `tokenId`.
      */
     function _burn(address owner, uint256 tokenId) private {
-        require(owner != address(0), "ERC1155:zero address");
+        _requireAvailableTokenAccount(owner);
         _requireExists(tokenId);
         _requireAdequateBalance(owner, tokenId);
-        // _requireAdequateBalance(owner, tokenId);
+        uint256 amount = ERC1155.balanceOf(owner, tokenId);
+        _nftAmts[tokenId] -= amount;
         _balances[tokenId][owner] = 0;
+        if (_nftAmts[tokenId] == 0) {
+            delete _tokenURIs[tokenId];
+            _tokenIds[tokenId] = false;
+        }
     }
 
     /**
@@ -483,6 +511,32 @@ contract ERC1155 is
         require(
             ERC1155.balanceOf(owner, tokenId) >= amount,
             "ERC1155:insufficient balance"
+        );
+    }
+
+    /**
+     * @dev Requires a available account.
+     *
+     * Requirements:
+     * - `sender` must be a available `token` account.
+     */
+    function _requireAvailableTokenAccount(address account) private view {
+        require(account != address(0), "ERC1155:zero address");
+    }
+
+    /**
+     * @dev Requires approved or onwer.
+     *
+     * Requirements:
+     * - `spender` is owner or approved.
+     */
+    function _requireApprovedOrOwner(address owner, address spender)
+        private
+        view
+    {
+        require(
+            ERC1155.isApprovedForAll(owner, spender) || spender == owner,
+            "ERC1155:not owner nor approved"
         );
     }
 }
